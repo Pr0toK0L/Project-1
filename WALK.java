@@ -13,7 +13,9 @@ import org.snmp4j.smi.GenericAddress;
 import org.snmp4j.smi.OID;
 import org.snmp4j.smi.OctetString;
 import org.snmp4j.smi.VariableBinding;
+import org.snmp4j.smi.Variable;
 import org.snmp4j.transport.DefaultUdpTransportMapping;
+import java.util.*;
 
 public class WALK {
 
@@ -24,51 +26,65 @@ public class WALK {
         String community = "public";
 
         // SNMP OID to walk
-        String oid = ".1.3.6.1.2.1.1.1";
+        String baseOid = ".1.3.6.1.2.1.1.1";
 
         // Create TransportMapping and Snmp objects
         DefaultUdpTransportMapping transport;
         Snmp snmp;
         try {
+            // Create TransportMapping and Snmp objects
             transport = new DefaultUdpTransportMapping();
             snmp = new Snmp(transport);
             transport.listen();
 
+            // Create Target
+            Address targetAddress = GenericAddress.parse("udp:" + ipAddress + "/" + port);
             CommunityTarget target = new CommunityTarget();
             target.setCommunity(new OctetString(community));
-            target.setAddress(GenericAddress.parse("udp:" + ipAddress + "/" + port));
+            target.setAddress(targetAddress);
             target.setVersion(SnmpConstants.version2c);
 
-            PDU pdu = new PDU();
-            pdu.setType(PDU.GETNEXT);
-            pdu.add(new VariableBinding(new OID(oid)));
-
+            // Perform walk operation
+            List<VariableBinding> resultBindings = new ArrayList<>();
             boolean finished = false;
+            OID lastReceivedOid = null;
 
             while (!finished) {
-                ResponseEvent response = snmp.send(pdu, target);
-                PDU responsePDU = response.getResponse();
+                PDU requestPdu = new PDU();
+                requestPdu.setType(PDU.GETNEXT);
+                requestPdu.add(new VariableBinding(new OID(baseOid)));
 
-                if (responsePDU != null) {
-                    VariableBinding vb = responsePDU.get(0);
-                    OID currentOid = vb.getOid();
+                ResponseEvent responseEvent = snmp.send(requestPdu, target);
+                PDU responsePdu = responseEvent.getResponse();
 
-                    if (currentOid != null && currentOid.toString().startsWith(oid)) {
-                        System.out.println(vb.getOid() + ": " + vb.getVariable());
-
-                        // Prepare next request
-                        pdu.clear();
-                        pdu.setType(PDU.GETNEXT);
-                        pdu.add(new VariableBinding(currentOid));
-                    } else {
-                        finished = true;
-                    }
+                if (responsePdu == null) {
+                    System.out.println("Walk operation timed out");
+                    break;
                 } else {
-                    System.out.println("GETNEXT timed out");
-                    finished = true;
+                    VariableBinding receivedBinding = responsePdu.get(0);
+                    OID receivedOid = receivedBinding.getOid();
+                    Variable receivedVariable = receivedBinding.getVariable();
+                    String receivedValue = receivedVariable.toString();
+
+                    if (receivedOid == null || receivedOid.size() < baseOid.length()
+                            || !receivedOid.toString().startsWith(baseOid)) {
+                        // Reached the end of the walk
+                        finished = true;
+                    } else {
+                        // Process the received value
+                        System.out.println(receivedOid + ": " + receivedValue);
+
+                        // Prepare for the next iteration
+                        resultBindings.add(receivedBinding);
+                        lastReceivedOid = receivedOid;
+
+                        // Set the base OID for the next request
+                        baseOid = receivedOid.toString();
+                    }
                 }
             }
 
+            // Clean up resources
             snmp.close();
         } catch (Exception e) {
             e.printStackTrace();
